@@ -1,0 +1,21 @@
+# Python
+venv/
+.env
+__pycache__/
+*.pyc
+
+# Node / Frontend
+node_modules/
+.next/
+dist/
+.env.local
+.env.development
+.env.production
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+
+# Python virtual environments
+.venv/
+venv/
