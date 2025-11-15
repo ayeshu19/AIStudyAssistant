@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { simplifyRaw } from "../lib/api";
 
 type Msg = {
@@ -18,6 +18,187 @@ export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [loading, setLoading] = useState(false);
   const [showChecks, setShowChecks] = useState(false);
+
+  // Track which assistant message is currently being spoken
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+
+  // Available browser voices
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  // "auto" = choose based on grade; otherwise use the selected voiceURI
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string>("auto");
+
+  // Load voices from Web Speech API
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    const synth = window.speechSynthesis;
+
+    const loadVoices = () => {
+      const loaded = synth.getVoices();
+      if (loaded && loaded.length > 0) {
+        setVoices(loaded);
+      }
+    };
+
+    loadVoices();
+    synth.onvoiceschanged = loadVoices;
+
+    return () => {
+      // ts-expect-error: some browsers don't like assigning null
+      synth.onvoiceschanged = null;
+    };
+  }, []);
+
+  // Helper: pick best voice for this grade + selection
+  const getVoiceForGrade = (g: 1 | 2 | 3): SpeechSynthesisVoice | undefined => {
+    if (!voices.length) return undefined;
+
+    // If user manually selected a voice → always use that
+    if (selectedVoiceId !== "auto") {
+      const manual = voices.find((v) => v.voiceURI === selectedVoiceId);
+      if (manual) return manual;
+    }
+
+    // Auto mode: choose based on grade
+    const englishVoices = voices.filter((v) =>
+      v.lang.toLowerCase().startsWith("en")
+    );
+
+    const pickByName = (
+      list: SpeechSynthesisVoice[],
+      tokens: string[]
+    ): SpeechSynthesisVoice | undefined => {
+      const lowerTokens = tokens.map((t) => t.toLowerCase());
+      return (
+        list.find((v) => {
+          const name = v.name.toLowerCase();
+          return lowerTokens.some((t) => name.includes(t));
+        }) || undefined
+      );
+    };
+
+    if (g === 1) {
+      // Kid-friendly / soft voice
+      return (
+        pickByName(englishVoices, ["child", "kid", "kids", "girl", "female"]) ||
+        englishVoices[0] ||
+        voices[0]
+      );
+    }
+
+    if (g === 2) {
+      // Teacher voice: neutral and clear
+      return (
+        pickByName(englishVoices, ["aria", "zira", "samantha", "teacher"]) ||
+        englishVoices[0] ||
+        voices[0]
+      );
+    }
+
+    // Grade 3: professional (male / narrator style if available)
+    return (
+      pickByName(englishVoices, [
+        "male",
+        "guy",
+        "christopher",
+        "daniel",
+        "george",
+        "narrator",
+      ]) ||
+      englishVoices[0] ||
+      voices[0]
+    );
+  };
+
+  // Core function that actually speaks text
+  const speakText = (opts: {
+    text: string;
+    grade: 1 | 2 | 3;
+    msgId?: string; // only set for real assistant messages (for toggle)
+  }) => {
+    if (typeof window === "undefined") return;
+
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      alert("Speech is not supported in this browser.");
+      return;
+    }
+
+    const { text, grade: g, msgId } = opts;
+
+    // If this same message is already speaking → stop it (toggle)
+    if (msgId && speakingId === msgId) {
+      synth.cancel();
+      setSpeakingId(null);
+      return;
+    }
+
+    // Stop any existing speech before starting a new one
+    synth.cancel();
+
+    const utter = new SpeechSynthesisUtterance(text);
+
+    // Grade-based rate & pitch
+    if (g === 1) {
+      // Slow, playful, kid-friendly
+      utter.rate = 0.85;
+      utter.pitch = 1.2;
+    } else if (g === 2) {
+      // Neutral teacher
+      utter.rate = 1.0;
+      utter.pitch = 1.0;
+    } else {
+      // Grade 3: slightly faster, more serious
+      utter.rate = 1.15;
+      utter.pitch = 0.95;
+    }
+
+    // Select voice based on grade + manual dropdown
+    const voice = getVoiceForGrade(g);
+    if (voice) {
+      utter.voice = voice;
+    }
+
+    utter.onend = () => {
+      if (msgId) {
+        setSpeakingId((current) => (current === msgId ? null : current));
+      }
+    };
+    utter.onerror = () => {
+      if (msgId) {
+        setSpeakingId((current) => (current === msgId ? null : current));
+      }
+    };
+
+    if (msgId) {
+      setSpeakingId(msgId);
+    } else {
+      setSpeakingId(null);
+    }
+
+    synth.speak(utter);
+  };
+
+  // Called when user clicks 🔊 on an assistant message
+  const speak = (msg: Msg) => {
+    const g = msg.grade ?? 1;
+    speakText({ text: msg.text, grade: g, msgId: msg.id });
+  };
+
+  // Preview voice button: speak a short sample for current grade + selected voice
+  const previewVoice = () => {
+    const g = grade;
+    let sample = "Hi! This is how I will read your lessons for you.";
+
+    if (g === 2) {
+      sample = "Hello! I will explain your topics clearly like this.";
+    } else if (g === 3) {
+      sample =
+        "This is the professional voice that will read your advanced explanations.";
+    }
+
+    speakText({ text: sample, grade: g });
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -176,6 +357,60 @@ export default function Home() {
             </button>
           ))}
 
+          {/* Voice selection */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              flexGrow: 1,
+              minWidth: 220,
+            }}
+          >
+            <label
+              style={{
+                fontSize: 13,
+                color: "#4b5563",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Voice:
+            </label>
+            <select
+              value={selectedVoiceId}
+              onChange={(e) => setSelectedVoiceId(e.target.value)}
+              style={{
+                flexGrow: 1,
+                padding: "6px 8px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                fontSize: 13,
+                background: "#ffffff",
+              }}
+            >
+              <option value="auto">Auto (match grade)</option>
+              {voices.map((v) => (
+                <option key={v.voiceURI} value={v.voiceURI}>
+                  {v.name} ({v.lang})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={previewVoice}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              🔉 Preview
+            </button>
+          </div>
+
           <label
             style={{
               marginLeft: "auto",
@@ -255,6 +490,11 @@ export default function Home() {
               onClick={() => {
                 setInput("");
                 setMessages([]);
+                // also stop any ongoing speech
+                if (typeof window !== "undefined" && window.speechSynthesis) {
+                  window.speechSynthesis.cancel();
+                }
+                setSpeakingId(null);
               }}
               style={{
                 padding: "10px 16px",
@@ -306,7 +546,10 @@ export default function Home() {
                     </strong>
                     <button
                       type="button"
-                      aria-label="Speak response"
+                      aria-label={
+                        speakingId === m.id ? "Stop speaking" : "Speak response"
+                      }
+                      onClick={() => speak(m)}
                       style={{
                         border: "none",
                         background: "transparent",
@@ -315,9 +558,8 @@ export default function Home() {
                         lineHeight: 1,
                         color: "#4b5563",
                       }}
-                      // You can add speech synthesis here later if you want
                     >
-                      🎤
+                      {speakingId === m.id ? "⏹" : "🔊"}
                     </button>
                   </div>
                   <div style={{ fontSize: 14, color: "#111827" }}>{m.text}</div>
